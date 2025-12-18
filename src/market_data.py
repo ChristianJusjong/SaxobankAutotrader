@@ -92,7 +92,7 @@ class MarketDataManager:
             "Authorization": f"Bearer {token}"
         }
 
-        logger.info(f"Connecting to WebSocket stream at {url}...")
+        logger.info(f"Connecting to WebSocket stream at {url_base}...")
         
         self.ws = websocket.WebSocketApp(
             url,
