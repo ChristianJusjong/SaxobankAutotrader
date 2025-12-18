@@ -1,16 +1,13 @@
 import os
 import requests
 import datetime
-import logging
 import redis
 from urllib.parse import urlencode
 from dotenv import load_dotenv, set_key
+from logger_config import logger
 
 # Load environment variables
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class SaxoAuthManager:
     def __init__(self, env_path='.env'):

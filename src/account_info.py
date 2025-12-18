@@ -1,9 +1,7 @@
 import requests
-import logging
 import os
 from auth_manager import SaxoAuthManager
-
-logger = logging.getLogger(__name__)
+from logger_config import logger
 
 class AccountManager:
     def __init__(self, auth_manager=None):
