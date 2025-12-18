@@ -120,10 +120,18 @@ class MarketScanner:
                 
                 if resp.status_code == 200:
                     data = resp.json().get('Data', [])
+                    max_change = 0.0
                     for item in data:
+                        quote = item.get('Quote', {})
+                        pct = abs(quote.get('PercentChange', 0.0))
+                        if pct > max_change: max_change = pct
+                        
                         res = self._analyze_hot_candidate(item)
                         if res:
                             hot_candidates.append(res)
+                            
+                    logger.info(f"Scanner Batch ({len(data)} items) processed. Top Mover: {max_change:.2f}%")
+                    
                 elif resp.status_code == 429:
                     # Backoff handled by main scanner loop if needed, or trigger global limiter
                     retry = int(resp.headers.get("Retry-After", 60))
