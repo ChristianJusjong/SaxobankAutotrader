@@ -1,10 +1,7 @@
-import logging
-import requests
 import json
 import time
 from collections import deque
-
-logger = logging.getLogger(__name__)
+from logger_config import logger
 
 class RateLimiter:
     def __init__(self, limit=110, window=60): # 110 to be safe (limit is 120)

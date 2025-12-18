@@ -7,8 +7,7 @@ import websocket
 import struct
 from urllib.parse import urlencode
 from auth_manager import SaxoAuthManager
-
-logger = logging.getLogger(__name__)
+from logger_config import logger
 
 def decode_saxo_message(message):
     """
