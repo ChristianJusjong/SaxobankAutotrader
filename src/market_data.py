@@ -103,13 +103,44 @@ class MarketDataManager:
             on_close=self._on_close
         )
 
-        # Run in separate thread
-        wst = threading.Thread(target=self.ws.run_forever)
+        # Connect via Thread using a robust loop
+        wst = threading.Thread(target=self._connection_manager_loop, args=(url, headers))
         wst.daemon = True
         wst.start()
         
         # Give it a moment (async connect)
         time.sleep(2)
+
+    def _connection_manager_loop(self, url, headers):
+        """Maintains the WebSocket connection, reconnecting if it drops."""
+        while not self._stop_event.is_set():
+            logger.info("Initializing WebSocket connection...")
+            self.ws = websocket.WebSocketApp(
+                url,
+                header=headers,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close
+            )
+            
+            # This blocks until connection closes
+            self.ws.run_forever()
+            
+            if not self._stop_event.is_set():
+                logger.warning("WebSocket Stream Disconnected! Attempting reconnect in 5 seconds...")
+                time.sleep(5)
+                # Re-verify token before reconnecting?
+                # Ideally yes, but headers are static here. 
+                # If token expired, we might loop 401. 
+                # For now, let's rely on simple reconnect. 
+                # If 401 happens, run_forever exits fast.
+                # A robust solution would refresh token here, but self.auth is thread-safe?
+                # Let's try to update headers if needed.
+                token = self.auth.ensure_valid_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+
 
     def _on_open(self, ws):
         logger.info("WebSocket Connected! Setting up subscriptions...")

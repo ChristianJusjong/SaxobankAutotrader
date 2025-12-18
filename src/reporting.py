@@ -1,11 +1,5 @@
-import logging
-import os
-import psutil
-import datetime
-import json
 from collections import defaultdict
-
-logger = logging.getLogger("Reporter")
+from logger_config import logger
 
 class DailyReporter:
     def __init__(self, log_dir, account_manager):
