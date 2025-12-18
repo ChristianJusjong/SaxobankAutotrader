@@ -2,6 +2,7 @@ import os
 import requests
 import datetime
 import logging
+import redis
 from urllib.parse import urlencode
 from dotenv import load_dotenv, set_key
 
@@ -19,9 +20,66 @@ class SaxoAuthManager:
         self.auth_endpoint = os.getenv('AUTH_ENDPOINT')
         self.token_endpoint = os.getenv('TOKEN_ENDPOINT')
         self.redirect_url = os.getenv('REDIRECT_URL')
+        
         self.access_token = None
-        self.refresh_token = os.getenv('REFRESH_TOKEN')
         self.token_expiry = None
+        
+        # --- Redis Integration for Token Persistence ---
+        self.redis_client = None
+        redis_url = os.getenv('REDIS_URL')
+        if redis_url:
+            try:
+                self.redis_client = redis.from_url(redis_url)
+                self.redis_client.ping()
+                logger.info("Connected to Redis for Token Persistence.")
+            except Exception as e:
+                logger.error(f"Failed to connect to Redis (Auth): {e}")
+                self.redis_client = None
+
+        # Load Refresh Token (Priority: Redis > Env)
+        self.refresh_token = self._load_refresh_token()
+        
+    def _load_refresh_token(self):
+        """Loads refresh token from Redis or falls back to Environment."""
+        token = None
+        
+        # 1. Try Redis
+        if self.redis_client:
+            try:
+                msg = self.redis_client.get("saxotrader:refresh_token")
+                if msg:
+                    token = msg.decode('utf-8')
+                    logger.info("Loaded Refresh Token from Redis.")
+            except Exception as e:
+                logger.error(f"Error loading token from Redis: {e}")
+        
+        # 2. Key Env var (if Redis failed or empty)
+        if not token:
+            token = os.getenv('REFRESH_TOKEN')
+            if token:
+                logger.info("Loaded Refresh Token from Environment.")
+                
+        return token
+
+    def _save_refresh_token(self, token):
+        """Saves refresh token to Redis and .env."""
+        self.refresh_token = token
+        
+        # 1. Save to Redis
+        if self.redis_client:
+            try:
+                self.redis_client.set("saxotrader:refresh_token", token)
+                logger.info("Saved new Refresh Token to Redis.")
+            except Exception as e:
+                logger.error(f"Error saving token to Redis: {e}")
+        
+        # 2. Save to .env (Local Backup)
+        try:
+            os.environ['REFRESH_TOKEN'] = token 
+            if os.path.exists(self.env_path):
+                set_key(self.env_path, "REFRESH_TOKEN", token)
+        except Exception as e:
+            logger.warning(f"Could not update .env file: {e}")
 
     def get_login_url(self, state='init'):
         """Generates the URL for the user to authorize the app."""
@@ -62,36 +120,48 @@ class SaxoAuthManager:
         """Helper to make the token request and update state."""
         try:
             response = requests.post(self.token_endpoint, data=data)
-            response.raise_for_status()
+            
+            # Better Error Logging for HTML responses
+            if not response.ok:
+                logger.error(f"Token Request Failed: {response.status_code}")
+                try:
+                    logger.error(f"Response: {response.json()}")
+                except:
+                    logger.error(f"Response Body (First 200 chars): {response.text[:200]}...")
+                return False
+
             token_data = response.json()
 
             self.access_token = token_data.get('access_token')
-            self.refresh_token = token_data.get('refresh_token')
             expires_in = token_data.get('expires_in') # Seconds
+            
+            # Update Refresh Token if returned (It rotates!)
+            new_refresh = token_data.get('refresh_token')
+            if new_refresh:
+                self._save_refresh_token(new_refresh)
             
             # Calculate expiry time (subtract a buffer, e.g., 60 seconds)
             if expires_in:
                 self.token_expiry = datetime.datetime.now() + datetime.timedelta(seconds=int(expires_in) - 60)
 
-            # Update .env with new refresh token to persist it
-            if self.refresh_token:
-                 # Note: This updates the file on disk, which is useful for restarts
-                set_key(self.env_path, "REFRESH_TOKEN", self.refresh_token)
-
             logger.info("Token retrieved successfully.")
             return True
 
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"Failed to retrieve token: {e.response.text}")
-            return False
         except Exception as e:
-            logger.error(f"An unexpected error occurred: {e}")
+            logger.error(f"An unexpected error occurred during token request: {e}", exc_info=True)
             return False
 
     def ensure_valid_token(self):
         """Checks if token is valid, refreshes if necessary. Returns access_token."""
         if not self.access_token or (self.token_expiry and datetime.datetime.now() >= self.token_expiry):
             logger.info("Access token expired or missing. Attempting refresh...")
+            
+            # Reload from Redis just in case another worker refreshed it
+            current_stored = self._load_refresh_token()
+            if current_stored and current_stored != self.refresh_token:
+                logger.info("Newer refresh token found in storage. Updating...")
+                self.refresh_token = current_stored
+
             if not self.refresh_access_token():
                 logger.error("Failed to refresh token. Manual login required.")
                 return None
