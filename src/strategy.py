@@ -27,8 +27,11 @@ class TrendFollower:
         else:
             logger.warning("REDIS_URL not found. Bot running in stateless mode (memory only).")
 
-        # Positions: {uic: {'entry_price': float, 'quantity': int, 'max_price': float}}
-        self.positions = {}
+        else:
+            logger.warning("REDIS_URL not found. Bot running in stateless mode (memory only).")
+
+        # Active Positions: {uic: {'entry_price': float, 'qty': int, 'peak_price': float}}
+        self.active_positions = {}
         
         # Load State if available
         self._load_state()
@@ -55,8 +58,12 @@ class TrendFollower:
                     pos_data = json.loads(data)
                     uic = pos_data.get('uic')
                     if uic:
-                        self.positions[int(uic)] = pos_data
-                        logger.info(f"Restored orphaned position from Redis: UIC {uic} | Entry: {pos_data['entry_price']} | Max: {pos_data['max_price']}")
+                        # Migrate keys if old format exists
+                        if 'max_price' in pos_data: pos_data['peak_price'] = pos_data.pop('max_price')
+                        if 'quantity' in pos_data: pos_data['qty'] = pos_data.pop('quantity')
+                        
+                        self.active_positions[int(uic)] = pos_data
+                        logger.info(f"Restored orphaned position from Redis: UIC {uic} | Entry: {pos_data.get('entry_price')} | Peak: {pos_data.get('peak_price')}")
         except Exception as e:
             logger.error(f"Error loading state from Redis: {e}")
 
@@ -64,13 +71,12 @@ class TrendFollower:
         """Saves current position state to Redis."""
         if not self.redis_client: return
         
-        if uic in self.positions:
-            data = self.positions[uic]
+        if uic in self.active_positions:
+            data = self.active_positions[uic]
             data['uic'] = uic # ensure UIC is in the payload
             key = f"saxotrader:position:{uic}"
             try:
                 self.redis_client.set(key, json.dumps(data))
-                # logger.debug(f"Saved state for UIC {uic} to Redis.")
             except Exception as e:
                 logger.error(f"Error saving state to Redis: {e}")
 
@@ -94,7 +100,7 @@ class TrendFollower:
         self.price_history[uic].append(current_price)
         
         # 2. Check Signals
-        if uic in self.positions:
+        if uic in self.active_positions:
             return self._check_exit_signal(uic, current_price)
         else:
             return self._check_entry_signal(uic, current_price, quantity)
@@ -114,10 +120,10 @@ class TrendFollower:
             logger.info(f"Entry Signal for UIC {uic}: ShortEMA({short_ema:.2f}) > LongEMA({long_ema:.2f})")
             
             # Record Position (Simulated Entry)
-            self.positions[uic] = {
+            self.active_positions[uic] = {
                 'entry_price': current_price,
-                'quantity': quantity,
-                'max_price': current_price
+                'qty': quantity,
+                'peak_price': current_price
             }
             # PERSIST
             self._save_state(uic)
@@ -130,24 +136,24 @@ class TrendFollower:
         """
         Checks Trailing Stop with Profit Guard.
         """
-        position = self.positions[uic]
+        position = self.active_positions[uic]
         
         # Update Peak
-        if current_price > position['max_price']:
-            position['max_price'] = current_price
+        if current_price > position['peak_price']:
+            position['peak_price'] = current_price
             # PERSIST (Update Max Price)
             self._save_state(uic)
-            # logger.info(f"New Max Price for UIC {uic}: {current_price}")
+            # logger.info(f"New Peak Price for UIC {uic}: {current_price}")
         
         # Calculate Stop Price
-        stop_price = position['max_price'] * (1.0 - self.stop_loss_pct)
+        stop_price = position['peak_price'] * (1.0 - self.stop_loss_pct)
         
         if current_price <= stop_price:
             logger.warning(f"Trailing Stop HIT for UIC {uic} at {current_price} (Stop: {stop_price:.2f})")
             
             # --- PROFIT GUARD ---
             entry_price = position['entry_price']
-            qty = position['quantity']
+            qty = position['qty']
             
             # Strict Audit Check: Includes FX Friction and Slippage Buffer
             # Defaulting to USD instrument for now as per audit context
@@ -155,7 +161,7 @@ class TrendFollower:
             
             if is_profitable_safe:
                 logger.info(f"Profit Guard PASSED. Trade evaluated as SAFE (Net > 0 after FX/Slippage). Executing SELL.")
-                del self.positions[uic] # Close internal position tracker
+                del self.active_positions[uic] # Close internal position tracker
                 # PERSIST (Remove)
                 self._delete_state(uic)
                 return 'SELL'
@@ -203,8 +209,8 @@ if __name__ == "__main__":
         print(f"Price: {p} -> Signal: {signal}")
         
     # Check if position was recorded
-    if 211 in strategy.positions:
-        print(f"Position still open: {strategy.positions[211]}")
+    if 211 in strategy.active_positions:
+        print(f"Position still open: {strategy.active_positions[211]}")
     else:
         print("Position closed.")
 

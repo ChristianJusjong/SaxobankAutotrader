@@ -23,10 +23,10 @@ class DailyReporter:
             ram_mb = mem_info.rss / 1024 / 1024
             
             # Application Metrics
-            active_count = len(strategy.positions)
+            active_count = len(strategy.active_positions)
             tracking_info = []
-            for uic, data in strategy.positions.items():
-                tracking_info.append(f"UIC:{uic} Ent:{data['entry_price']} Max:{data['max_price']}")
+            for uic, data in strategy.active_positions.items():
+                tracking_info.append(f"UIC:{uic} Ent:{data['entry_price']} Peak:{data['peak_price']}")
             
             msg = (
                 f"HEALTH CHECK | CPU: {cpu_pct:.1f}% | RAM: {ram_mb:.1f}MB | "
