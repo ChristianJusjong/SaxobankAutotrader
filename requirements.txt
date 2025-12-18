@@ -1,0 +1,6 @@
+saxo-openapi
+python-dotenv
+requests
+flask
+websocket-client
+pytest
