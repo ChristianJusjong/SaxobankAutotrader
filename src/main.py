@@ -42,6 +42,8 @@ trade_logger.addHandler(trade_console_handler)
 
 trade_logger.propagate = False # Don't duplicate to root logger
 
+from reporting import DailyReporter
+
 # Configuration
 UICS_TO_TRADE = [211] # Apple
 TRADE_QUANTITY = 10
@@ -63,22 +65,28 @@ def main():
     market_data = MarketDataManager(auth)
     executor = OrderExecutor(account, dry_run=SIMULATION_MODE)
     strategy = TrendFollower(account)
+    reporter = DailyReporter(log_dir, account)
     
     # 3. Start Market Data Stream
     market_data.start_stream(UICS_TO_TRADE)
     
     # Track last processed update to avoid duplicates
     last_processed_time = {} # uic -> timestamp
+    last_health_check = time.time()
 
     logger.info("Bot is running. Press Ctrl+C to stop (and trigger Kill Switch).")
     
     try:
         while True:
             # A. Maintenance
-            # Ensure Auth is still good (Market Data auto-reconnects, but REST needs valid token)
             if not auth.ensure_valid_token():
                 logger.warning("Token expired, attempting refresh...")
             
+            # Health Check (Every 60s)
+            if time.time() - last_health_check > 60:
+                reporter.log_health(strategy)
+                last_health_check = time.time()
+
             # B. Strategy Loop
             for uic in UICS_TO_TRADE:
                 # Get latest state
@@ -100,18 +108,27 @@ def main():
                             action = 'Buy' if signal == 'BUY' else 'Sell'
                             trade_logger.info(f"SIGNAL DETECTED: {action} {uic} @ {current_price}")
                             
-                            success = executor.place_order(
-                                uic=uic,
-                                amount=TRADE_QUANTITY,
-                                action=action,
-                                order_type='Market',
-                                asset_type='Stock' # Default
-                            )
-                            
-                            if success:
-                                trade_logger.info(f"EXECUTION SUCCESS: {action} {uic}")
+                            if SIMULATION_MODE:
+                                reporter.log_simulation_trade(action, uic, current_price, "Strategy Signal (Dry Run)")
+                                # In Sim mode, strategy should arguably NOT clear the position if we aren't "really" trading, 
+                                # BUT to test the *Strategy Flow* (Buy -> Peak -> Sell), we MUST pretend we filled it.
+                                # Strategy class already updated its internal state (added/removed position) before returning signal?
+                                # Wait, strategy.update() calls _check_entry_signal which adds to self.positions...
+                                # So logic is already stateful. Good.
                             else:
-                                trade_logger.error(f"EXECUTION FAILED: {action} {uic}")
+                                success = executor.place_order(
+                                    uic=uic,
+                                    amount=TRADE_QUANTITY,
+                                    action=action,
+                                    order_type='Market',
+                                    asset_type='Stock'
+                                )
+                                
+                                if success:
+                                    # Log rich details for PnL calculation
+                                    trade_logger.info(f"EXECUTION SUCCESS: {action} {uic} @ {current_price} | EstCost: TBD")
+                                else:
+                                    trade_logger.error(f"EXECUTION FAILED: {action} {uic}")
                         
                         # Update tracker
                         last_processed_time[uic] = update_time
@@ -123,12 +140,9 @@ def main():
         logger.warning("\nUser interrupted. Shutting down...")
         print("!!! STOPPING BOT !!!")
         
-        # Kill Switch Prompt/Action
-        # Since user asked for 'Safety Kill Switch' function in Executor,
-        # we can optionally call it here or just stop. 
-        # Usually Ctrl+C means "Stop Trading", not "Panic Close Everything".
-        # But if you want to implement the prompt:
-        
+        # Final Health Report
+        reporter.log_health(strategy)
+
         choice = input("Do you want to CLOSE ALL POSITIONS before exiting? (y/N): ")
         if choice.lower() == 'y':
             executor.kill_switch()
@@ -138,8 +152,6 @@ def main():
             
     except Exception as e:
         logger.critical(f"Unexpected crash: {e}", exc_info=True)
-        # Emergency safety?
-        # executor.kill_switch() 
 
 if __name__ == "__main__":
     main()

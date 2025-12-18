@@ -5,3 +5,4 @@ flask
 websocket-client
 pytest
 redis
+psutil
