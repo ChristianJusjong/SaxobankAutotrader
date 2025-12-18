@@ -1,13 +1,7 @@
-import logging
 import requests
 import time
 import threading
-
-# ANSI Color Codes for "Sophisticated Logging"
-CYAN = "\033[96m"
-RESET = "\033[0m"
-
-logger = logging.getLogger("Scanner")
+from logger_config import logger
 
 class MarketScanner:
     def __init__(self, auth_manager, market_data_manager, rate_limiter=None):
@@ -80,10 +74,11 @@ class MarketScanner:
         if percent_change > 3.0:
             symbol = item.get('DisplayAndFormat', {}).get('Symbol', f"UIC:{uic}")
             
-            # Log with CYAN color
-            msg = f"{CYAN}[SCANNER] Quick Win Detected! {symbol} is up {percent_change:.2f}% (Price: {current_price}). Adding to High-Speed Stream.{RESET}"
-            print(msg) # Ensure it goes to console with color
-            logger.info(f"Quick Win Detected: {symbol} (+{percent_change}%)")
+        if percent_change > 3.0:
+            symbol = item.get('DisplayAndFormat', {}).get('Symbol', f"UIC:{uic}")
+            
+            # Info level is configured as Cyan in logger_config.py
+            logger.info(f"Quick Win Detected! {symbol} is up {percent_change:.2f}% (Price: {current_price}). Adding to Stream.")
             
             # Dynamic Subscription
             self.md.add_subscription(uic)

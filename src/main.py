@@ -1,10 +1,11 @@
 import time
-import logging
 import os
 import sys
 
-# Add src to path if needed, though usually running from root works
+# Add src to path if needed
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from logger_config import logger # Professional Logger
 
 from auth_manager import SaxoAuthManager
 from account_info import AccountManager
@@ -17,52 +18,13 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 log_dir = os.path.join(script_dir, '..', 'logs')
 os.makedirs(log_dir, exist_ok=True)
 
-# Configure General Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(log_dir, 'bot.log')),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("SaxoTrader")
-
-# Configure Trades Logger
-trade_logger = logging.getLogger("Trades")
-trade_logger.setLevel(logging.INFO)
-# Standard File Handler
-trade_handler = logging.FileHandler(os.path.join(log_dir, 'trades.log'))
-trade_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-trade_logger.addHandler(trade_handler)
-# ADDED: Stream Handler for Docker/Railway Logs
-trade_console_handler = logging.StreamHandler()
-trade_console_handler.setFormatter(logging.Formatter('[TRADE] %(asctime)s - %(message)s'))
-trade_logger.addHandler(trade_console_handler)
-
-trade_logger.propagate = False # Don't duplicate to root logger
-
 from reporting import DailyReporter
 from scanner import MarketScanner
-
-# ANSI Colors for Sophisticated Logging
-BLUE = "\033[94m" # Heartbeat
-CYAN = "\033[96m" # Scanner
-GREEN = "\033[92m" # Buy
-YELLOW = "\033[93m" # Peak
-RED = "\033[91m" # Sell
-RESET = "\033[0m"
 
 # Configuration
 UICS_TO_TRADE = [211] # Apple
 TRADE_QUANTITY = 10
 SIMULATION_MODE = True
-
-def log_event(color, tag, message):
-    """Prints a distinct color-coded log to console and standard file log."""
-    formatted_msg = f"{color}[{tag}] {message}{RESET}"
-    print(formatted_msg) # Console for Railway
-    logger.info(f"[{tag}] {message}") # File for perstistence
 
 def main():
     logger.info("Starting SaxoTrader Bot...")
@@ -100,17 +62,27 @@ def main():
     
     try:
         while True:
+            current_time = time.time()
+
             # A. Maintenance
             if not auth.ensure_valid_token():
                 logger.warning("Token expired, attempting refresh...")
             
+            # Heartbeat (Every 5 mins)
+            if current_time - last_heartbeat > 300:
+                logger.info("[HEARTBEAT] System Healthy. Connection Stable.")
+                last_heartbeat = current_time
+
             # Health Check (Every 60s)
-            if time.time() - last_health_check > 60:
+            if current_time - last_health_check > 60:
                 reporter.log_health(strategy)
-                last_health_check = time.time()
+                last_health_check = current_time
 
             # B. Strategy Loop
-            for uic in UICS_TO_TRADE:
+            # Copy active_uics because Scanner might modify the list in another thread
+            active_uics = list(market_data.active_uics) 
+
+            for uic in active_uics:
                 # Get latest state
                 state = market_data.live_market_state.get(uic)
                 
@@ -120,23 +92,28 @@ def main():
                     
                     # Only process if we haven't seen this specific update yet
                     if update_time != last_processed_time.get(uic):
-                        logger.debug(f"Processing update for {uic}: {current_price}")
+                        # logger.debug(f"Tick: {uic} @ {current_price}")
                         
+                        prev_max = strategy.positions.get(uic, {}).get('max_price', 0)
+
                         # Update Strategy
                         signal = strategy.update(uic, current_price, quantity=TRADE_QUANTITY)
                         
+                        # Check for Peak Update
+                        new_max = strategy.positions.get(uic, {}).get('max_price', 0)
+                        if new_max > prev_max and prev_max > 0:
+                            # User requested WARNING (Yellow) for Peaks
+                            logger.warning(f"PEAK DETECTED: UIC {uic} New High: {new_max:.2f}")
+
                         # Handle Signals
                         if signal:
                             action = 'Buy' if signal == 'BUY' else 'Sell'
-                            trade_logger.info(f"SIGNAL DETECTED: {action} {uic} @ {current_price}")
+                            
+                            # User requested CRITICAL (Bold Red) for Executing Trades
+                            logger.critical(f"TRADE SIGNAL: {action} {uic} @ {current_price}")
                             
                             if SIMULATION_MODE:
                                 reporter.log_simulation_trade(action, uic, current_price, "Strategy Signal (Dry Run)")
-                                # In Sim mode, strategy should arguably NOT clear the position if we aren't "really" trading, 
-                                # BUT to test the *Strategy Flow* (Buy -> Peak -> Sell), we MUST pretend we filled it.
-                                # Strategy class already updated its internal state (added/removed position) before returning signal?
-                                # Wait, strategy.update() calls _check_entry_signal which adds to self.positions...
-                                # So logic is already stateful. Good.
                             else:
                                 success = executor.place_order(
                                     uic=uic,
@@ -147,10 +124,9 @@ def main():
                                 )
                                 
                                 if success:
-                                    # Log rich details for PnL calculation
-                                    trade_logger.info(f"EXECUTION SUCCESS: {action} {uic} @ {current_price} | EstCost: TBD")
+                                    logger.critical(f"EXECUTION SUCCESS: {action} {uic}")
                                 else:
-                                    trade_logger.error(f"EXECUTION FAILED: {action} {uic}")
+                                    logger.error(f"EXECUTION FAILED: {action} {uic}")
                         
                         # Update tracker
                         last_processed_time[uic] = update_time

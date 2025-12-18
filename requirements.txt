@@ -6,3 +6,4 @@ websocket-client
 pytest
 redis
 psutil
+colorlog
