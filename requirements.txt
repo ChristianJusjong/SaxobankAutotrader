@@ -4,3 +4,4 @@ requests
 flask
 websocket-client
 pytest
+redis
