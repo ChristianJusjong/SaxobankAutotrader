@@ -86,8 +86,8 @@ class MarketDataManager:
             logger.error("No valid token for streaming.")
             return
 
-        # Build WS URL with auth params
-        url = f"{self.streaming_url}?contextId={self.context_id}"
+        # Build WS URL base
+        url_base = self.streaming_url
         headers = {
             "Authorization": f"Bearer {token}"
         }
@@ -104,19 +104,30 @@ class MarketDataManager:
         )
 
         # Connect via Thread using a robust loop
-        wst = threading.Thread(target=self._connection_manager_loop, args=(url, headers))
+        wst = threading.Thread(target=self._connection_manager_loop, args=(url_base, headers))
         wst.daemon = True
         wst.start()
         
         # Give it a moment (async connect)
         time.sleep(2)
 
-    def _connection_manager_loop(self, url, headers):
+    def _connection_manager_loop(self, url_base, headers):
         """Maintains the WebSocket connection, reconnecting if it drops."""
         while not self._stop_event.is_set():
-            logger.info("Initializing WebSocket connection...")
+            # generate unique context ID to avoid 409 Conflict
+            new_context_id = f"BotContext_{int(time.time())}"
+            self.context_id = new_context_id
+            
+            # Update RefId base as well to be clean? No, RefId is per subscription.
+            
+            # Construct URL with new ContextId
+            # url_base was "wss://.../connect"
+            full_url = f"{url_base}?contextId={self.context_id}"
+            
+            logger.info(f"Initializing WebSocket connection (ContextId: {self.context_id})...")
+            
             self.ws = websocket.WebSocketApp(
-                url,
+                full_url,
                 header=headers,
                 on_open=self._on_open,
                 on_message=self._on_message,
@@ -130,13 +141,8 @@ class MarketDataManager:
             if not self._stop_event.is_set():
                 logger.warning("WebSocket Stream Disconnected! Attempting reconnect in 5 seconds...")
                 time.sleep(5)
-                # Re-verify token before reconnecting?
-                # Ideally yes, but headers are static here. 
-                # If token expired, we might loop 401. 
-                # For now, let's rely on simple reconnect. 
-                # If 401 happens, run_forever exits fast.
-                # A robust solution would refresh token here, but self.auth is thread-safe?
-                # Let's try to update headers if needed.
+                
+                # Check token
                 token = self.auth.ensure_valid_token()
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
