@@ -94,14 +94,7 @@ class MarketDataManager:
 
         logger.info(f"Connecting to WebSocket stream at {url_base}...")
         
-        self.ws = websocket.WebSocketApp(
-            url,
-            header=headers,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
+
 
         # Connect via Thread using a robust loop
         wst = threading.Thread(target=self._connection_manager_loop, args=(url_base, headers))
