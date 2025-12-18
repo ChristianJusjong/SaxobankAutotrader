@@ -16,11 +16,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application
+# Copy the rest of the application
 COPY src/ src/
-COPY .env . 
-# Note: .env is usually ignored in git, but for local docker build manual copy works.
-# In Railway, you set variables in the Dashboard. 
-# We copy it here just in case, but Railway variables override it.
+
+# Note: .env is ignored. Railway Config Variables are used in production.
+# Local dev uses .env via python-dotenv loading.
+
 
 # Create logs directory
 RUN mkdir logs
