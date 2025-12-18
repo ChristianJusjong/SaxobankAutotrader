@@ -128,8 +128,8 @@ class MarketDataManager:
     def _on_close(self, ws, close_status_code, close_msg):
         logger.info(f"WebSocket Closed: {close_status_code} - {close_msg}")
 
-    def _subscribe_uics(self, uics):
-        """Subscribes to InfoPrices via REST API."""
+    def _subscribe_uics(self, uics, ref_id_suffix=""):
+        """Subscribes to InfoPrices via REST API. suffix allows multiple subs."""
         token = self.auth.ensure_valid_token()
         url = "https://gateway.saxobank.com/sim/openapi/trade/v1/infoprices/subscriptions"
         
@@ -138,20 +138,23 @@ class MarketDataManager:
             "Content-Type": "application/json"
         }
         
+        # Unique RefID for this batch
+        final_ref_id = self.ref_id + ref_id_suffix
+        
         data = {
             "Arguments": {
                 "Uics": ",".join(map(str, uics)),
                 "AssetType": "Stock"
             },
             "ContextId": self.context_id,
-            "ReferenceId": self.ref_id,
+            "ReferenceId": final_ref_id,
             "RefreshRate": 1000 # ms
         }
         
         try:
             resp = requests.post(url, headers=headers, json=data)
             if resp.status_code == 201:
-                logger.info(f"Subscription confirmed for UICs: {uics}")
+                logger.info(f"Subscription confirmed for UICs: {uics} (RefId: {final_ref_id})")
                 # Process initial snapshot if present
                 snapshot = resp.json().get('Snapshot', {})
                 if snapshot:
@@ -160,6 +163,19 @@ class MarketDataManager:
                 logger.error(f"Failed to subscribe: {resp.text}")
         except Exception as e:
             logger.error(f"Subscription error: {e}")
+
+    def add_subscription(self, uic):
+        """Adds a single UIC to the monitoring stream dynamically."""
+        with self._lock:
+            if uic in self.active_uics:
+                logger.debug(f"UIC {uic} is already tracked.")
+                return
+            
+            self.active_uics.append(uic)
+        
+        # Subscribe using a unique RefId suffix relative to time to avoid collisions
+        suffix = f"_{uic}_{int(time.time())}"
+        self._subscribe_uics([uic], ref_id_suffix=suffix)
 
     def _on_message(self, ws, message):
         """Callback when binary message is received."""
