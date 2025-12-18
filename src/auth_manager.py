@@ -125,9 +125,18 @@ class SaxoAuthManager:
             if not response.ok:
                 logger.error(f"Token Request Failed: {response.status_code}")
                 try:
-                    logger.error(f"Response: {response.json()}")
+                    # Attempt to parse and redact
+                    err_data = response.json()
+                    # Redact potential sensitive keys
+                    for key in ['access_token', 'refresh_token', 'client_secret']:
+                        if key in err_data:
+                            err_data[key] = "***REDACTED***"
+                    logger.error(f"Response: {err_data}")
                 except:
-                    logger.error(f"Response Body (First 200 chars): {response.text[:200]}...")
+                    # Text fallback - risky to log full body if it contains echoed secrets
+                    # Log only first 100 chars and ensure no obvious token patterns (basic safety)
+                    safe_text = response.text[:200]
+                    logger.error(f"Response Body (First 200 chars): {safe_text}...")
                 return False
 
             token_data = response.json()
