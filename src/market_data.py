@@ -75,25 +75,19 @@ class MarketDataManager:
         self.live_market_state = {} # uic -> {LastPrice, QuoteUpdated}
         self.ws = None
         self.active_uics = []
+        self.uic_ref_map = {} # uic -> ref_id
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
     def start_stream(self, uics):
         """Starts the WebSocket stream and subscribes to the given UICs."""
-        self.active_uics = uics
+        self.active_uics = list(uics) # Copy
         token = self.auth.ensure_valid_token()
         if not token:
             logger.error("No valid token for streaming.")
             return
 
         # Build WS URL with auth params
-        # Note: Valid params are contextId and Authorization (Bearer <token>)
-        # Some endpoints require authorization in header, but for WS connect it is often in Query
-        # Saxo docs: "The access token must be provided in the HTTP Authorization header... effectively preventing usage from browser JS...
-        # BUT many clients support headers. websocket-client supports headers."
-        
-        # We will try passing Authorization via header, which is cleaner.
-        
         url = f"{self.streaming_url}?contextId={self.context_id}"
         headers = {
             "Authorization": f"Bearer {token}"
@@ -155,6 +149,12 @@ class MarketDataManager:
             resp = requests.post(url, headers=headers, json=data)
             if resp.status_code == 201:
                 logger.info(f"Subscription confirmed for UICs: {uics} (RefId: {final_ref_id})")
+                
+                # Map UICs to this RefID for future unsubscription
+                with self._lock:
+                    for uic in uics:
+                        self.uic_ref_map[uic] = final_ref_id
+
                 # Process initial snapshot if present
                 snapshot = resp.json().get('Snapshot', {})
                 if snapshot:
@@ -164,7 +164,7 @@ class MarketDataManager:
         except Exception as e:
             logger.error(f"Subscription error: {e}")
 
-    def add_subscription(self, uic):
+    def subscribe_to_ticker(self, uic):
         """Adds a single UIC to the monitoring stream dynamically."""
         with self._lock:
             if uic in self.active_uics:
@@ -173,9 +173,53 @@ class MarketDataManager:
             
             self.active_uics.append(uic)
         
-        # Subscribe using a unique RefId suffix relative to time to avoid collisions
+        # Subscribe using a unique RefId suffix relative to time + uic to avoid collisions
         suffix = f"_{uic}_{int(time.time())}"
         self._subscribe_uics([uic], ref_id_suffix=suffix)
+        
+    def add_subscription(self, uic):
+        """Alias for subscribe_to_ticker."""
+        self.subscribe_to_ticker(uic)
+
+    def unsubscribe_from_ticker(self, uic):
+        """Removes a UIC from monitoring and deletes its subscription."""
+        ref_id = None
+        
+        with self._lock:
+             if uic not in self.active_uics:
+                 logger.warning(f"UIC {uic} not found in active list.")
+                 return
+             
+             ref_id = self.uic_ref_map.get(uic)
+             if not ref_id:
+                 logger.warning(f"No Reference ID found for UIC {uic}. Cannot unsubscribe via API.")
+                 # Still remove from local tracking
+                 self.active_uics.remove(uic)
+                 if uic in self.live_market_state: del self.live_market_state[uic]
+                 return
+        
+        # Call API to DELETE subscription
+        token = self.auth.ensure_valid_token()
+        # DELETE /trade/v1/infoprices/subscriptions/{ContextId}/{ReferenceId}
+        url = f"https://gateway.saxobank.com/sim/openapi/trade/v1/infoprices/subscriptions/{self.context_id}/{ref_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        try:
+            resp = requests.delete(url, headers=headers)
+            if resp.status_code in [202, 204, 200]:
+                logger.info(f"Unsubscribed from UIC {uic} (RefId: {ref_id})")
+                
+                # Cleanup Local State
+                with self._lock:
+                    if uic in self.active_uics: self.active_uics.remove(uic)
+                    if uic in self.uic_ref_map: del self.uic_ref_map[uic]
+                    if uic in self.live_market_state: del self.live_market_state[uic]
+                    
+            else:
+                logger.error(f"Failed to unsubscribe UIC {uic}: {resp.status_code} {resp.text}")
+                
+        except Exception as e:
+            logger.error(f"Unsubscription error: {e}")
 
     def _on_message(self, ws, message):
         """Callback when binary message is received."""
