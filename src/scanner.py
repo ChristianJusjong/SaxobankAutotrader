@@ -10,14 +10,12 @@ RESET = "\033[0m"
 logger = logging.getLogger("Scanner")
 
 class MarketScanner:
-    def __init__(self, auth_manager, market_data_manager):
+    def __init__(self, auth_manager, market_data_manager, rate_limiter=None):
         self.auth = auth_manager
         self.md = market_data_manager
+        self.rate_limiter = rate_limiter
         self.running = False
         # Example: US Big Tech & High Volatility Tickers (UICs)
-        # In a real dynamic search, we'd query /ref/v1/instruments
-        # For this demo, we pre-seed a "Market Watchlist" of UICs to scan
-        # 211: Apple, 137: Google (Demo UICs might differ, using placeholders/common ones from Sim)
         self.watchlist_uics = [211, 212, 111] 
         self.scan_interval = 300 # 5 minutes
 
@@ -38,6 +36,13 @@ class MarketScanner:
             time.sleep(self.scan_interval)
 
     def _run_scan(self):
+        # Rate Limiter Check (Low Priority)
+        # We check BEFORE auth or request to save calls
+        if self.rate_limiter:
+            if not self.rate_limiter.can_proceed(priority='low'):
+                logger.warning("Market Scanner PAUSED due to API Rate Limit (Saving bandwidth for Sells).")
+                return # Skip this interval
+
         token = self.auth.ensure_valid_token()
         if not token: return
         
@@ -49,10 +54,18 @@ class MarketScanner:
         headers = {"Authorization": f"Bearer {token}"}
         
         resp = requests.get(url, headers=headers)
+        
+        # Count the call
+        if self.rate_limiter: self.rate_limiter.add_call()
+        
         if resp.status_code == 200:
             data = resp.json().get('Data', [])
             for item in data:
                 self._analyze_instrument(item)
+        elif resp.status_code == 429:
+             retry_after = int(resp.headers.get("Retry-After", 60))
+             if self.rate_limiter: self.rate_limiter.trigger_cooldown(retry_after)
+             logger.warning(f"Scanner hit 429. Backing off for {retry_after}s.")
         else:
             logger.warning(f"Failed to fetch scanner snapshot: {resp.status_code}")
 

@@ -1,14 +1,69 @@
 import logging
 import requests
 import json
+import time
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
+class RateLimiter:
+    def __init__(self, limit=110, window=60): # 110 to be safe (limit is 120)
+        self.limit = limit
+        self.window = window
+        self.calls = deque()
+        self.cooldown_until = 0
+
+    def add_call(self):
+        """Records a new API call timestamp."""
+        self.calls.append(time.time())
+        self._cleanup()
+
+    def _cleanup(self):
+        """Removes calls older than the window."""
+        now = time.time()
+        while self.calls and now - self.calls[0] > self.window:
+            self.calls.popleft()
+
+    def can_proceed(self, priority='normal'):
+        """
+        Checks if a call can proceed.
+        priority: 'normal' or 'high' (e.g. 'Sell').
+        Returns: True if allowed, False if blocked.
+        """
+        now = time.time()
+        
+        # 1. Hard Cooldown (429 Block)
+        if now < self.cooldown_until:
+             # Even High Priority is blocked during strict 429 backoff usually, 
+             # but we could attempt it? Let's respect the 429 to avoid ban.
+             # User said: "Never delay a Sell order due to rate limits".
+             # Interpretation: Don't delay due to *internal counter*, but if Saxo says 429, we MUST wait.
+             if priority == 'high':
+                 logger.warning(f"RateLimiter: Attempting HIGH priority order despite cooldown ({self.cooldown_until - now:.1f}s remaining).")
+                 return True
+             return False
+
+        # 2. Rate Limit Logic
+        self._cleanup()
+        if len(self.calls) >= self.limit:
+            if priority == 'high':
+                logger.warning("RateLimiter: Limit reached, but proceeding with HIGH priority order.")
+                return True
+            return False
+            
+        return True
+
+    def trigger_cooldown(self, seconds=60):
+        """Activates backup due to 429."""
+        self.cooldown_until = time.time() + seconds
+        logger.warning(f"RateLimiter: Cooldown activated for {seconds}s.")
+
 class OrderExecutor:
-    def __init__(self, account_manager, dry_run=True):
+    def __init__(self, account_manager, dry_run=True, rate_limiter=None):
         self.account = account_manager
         self.dry_run = dry_run
         self.base_url = account_manager.base_url # Re-use base URL from account manager
+        self.rate_limiter = rate_limiter
         
         if self.dry_run:
             logger.warning("EXECUTOR IS IN SIMULATION MODE (DRY RUN). NO REAL TRADES WILL BE PLACED.")
@@ -21,6 +76,13 @@ class OrderExecutor:
         Places an order.
         action: 'Buy' or 'Sell'
         """
+        # 0. Rate Limiter Check
+        if self.rate_limiter:
+            priority = 'high' if action == 'Sell' else 'normal'
+            if not self.rate_limiter.can_proceed(priority):
+                logger.warning(f"Order skipped due to Rate Limit ({action} {uic})")
+                return False
+
         account_key = self.account.get_account_key()
         if not account_key:
             logger.error("Cannot place order: No AccountKey found.")
@@ -45,12 +107,25 @@ class OrderExecutor:
 
         if self.dry_run:
             logger.info(f"[SIMULATION] would place order: {json.dumps(payload, indent=2)}")
+            # In Sim, we still tick the limiter to simulate load? Yes.
+            if self.rate_limiter: self.rate_limiter.add_call()
             return True # Pretend success
 
         # Real Execution
         endpoint = f"{self.base_url}/trade/v1/orders"
         try:
             response = requests.post(endpoint, headers=self._get_headers(), json=payload)
+            
+            # Post-call: Count it
+            if self.rate_limiter: self.rate_limiter.add_call()
+
+            # Handle 429 specifically
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                if self.rate_limiter: self.rate_limiter.trigger_cooldown(retry_after)
+                logger.error(f"Rate Limit 429 Hit! Backing off for {retry_after}s")
+                return False
+
             response.raise_for_status()
             data = response.json()
             logger.info(f"Order placed successfully. OrderId: {data.get('OrderId')}")

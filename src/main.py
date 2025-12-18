@@ -10,7 +10,7 @@ from auth_manager import SaxoAuthManager
 from account_info import AccountManager
 from market_data import MarketDataManager
 from strategy import TrendFollower
-from executor import OrderExecutor
+from executor import OrderExecutor, RateLimiter
 
 # Setup Directories
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,11 +43,26 @@ trade_logger.addHandler(trade_console_handler)
 trade_logger.propagate = False # Don't duplicate to root logger
 
 from reporting import DailyReporter
+from scanner import MarketScanner
+
+# ANSI Colors for Sophisticated Logging
+BLUE = "\033[94m" # Heartbeat
+CYAN = "\033[96m" # Scanner
+GREEN = "\033[92m" # Buy
+YELLOW = "\033[93m" # Peak
+RED = "\033[91m" # Sell
+RESET = "\033[0m"
 
 # Configuration
 UICS_TO_TRADE = [211] # Apple
 TRADE_QUANTITY = 10
 SIMULATION_MODE = True
+
+def log_event(color, tag, message):
+    """Prints a distinct color-coded log to console and standard file log."""
+    formatted_msg = f"{color}[{tag}] {message}{RESET}"
+    print(formatted_msg) # Console for Railway
+    logger.info(f"[{tag}] {message}") # File for perstistence
 
 def main():
     logger.info("Starting SaxoTrader Bot...")
@@ -60,19 +75,26 @@ def main():
         logger.error("Authentication failed. Run 'src/callback_server.py' first.")
         return
 
-    # 2. Initialize Modules
+    # 2. Rate Limiter (Global)
+    # 120 calls per 60 seconds (API Limit)
+    rate_limiter = RateLimiter(limit=115, window=60)
+
+    # 3. Initialize Modules
     account = AccountManager(auth)
     market_data = MarketDataManager(auth)
-    executor = OrderExecutor(account, dry_run=SIMULATION_MODE)
+    executor = OrderExecutor(account, dry_run=SIMULATION_MODE, rate_limiter=rate_limiter)
     strategy = TrendFollower(account)
     reporter = DailyReporter(log_dir, account)
+    scanner = MarketScanner(auth, market_data, rate_limiter=rate_limiter)
     
-    # 3. Start Market Data Stream
+    # 4. Start Market Data Stream & Scanner
     market_data.start_stream(UICS_TO_TRADE)
+    scanner.start() # Start Polling in background
     
     # Track last processed update to avoid duplicates
     last_processed_time = {} # uic -> timestamp
     last_health_check = time.time()
+    last_heartbeat = time.time()
 
     logger.info("Bot is running. Press Ctrl+C to stop (and trigger Kill Switch).")
     
