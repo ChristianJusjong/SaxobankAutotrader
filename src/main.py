@@ -78,6 +78,16 @@ class BotOrchestrator:
         except Exception as e:
             logger.error(f"Failed to sync ActiveUniverse: {e}")
 
+    def _run_scanner_cycle(self):
+        """Helper to run scan and subscribe in thread pool."""
+        hot_list = self.scanner.perform_market_scan()
+        for item in hot_list:
+            # item is (uic, price, asset_type)
+            uic = item[0]
+            # add_to_stream handles valid token & subscription
+            self.market_data.add_to_stream(uic)
+        return hot_list
+
     async def task_scanner(self):
         """Task 1: The Scanner (Every 10 min)."""
         logger.info("Task [Scanner]: Started.")
@@ -88,11 +98,8 @@ class BotOrchestrator:
                 # Run sync scanner in thread pool
                 logger.info("Scanner: Starting Broad Market Scan...")
                 
-                # We don't need to manually call add_to_stream, the scanner logic does it.
-                # But to satisfy specific requirements, we ensure scanner uses market_data.add_to_stream
-                # (which it does in our refactored scanner.py via self.md.add_subscription)
-                
-                await loop.run_in_executor(self.executor, self.scanner.perform_market_scan)
+                # Execute Scan AND Subscription in the thread pool (blocking IO)
+                await loop.run_in_executor(self.executor, self._run_scanner_cycle)
                 
                 # Sync state after potential additions
                 self.sync_active_universe()
@@ -227,10 +234,13 @@ class BotOrchestrator:
         # Start WebSocket Thread (It's self-managed)
         self.market_data.start_stream(UICS_TO_TRADE)
         
-        # Register Signals
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
+        # Register Signals (Linux/MacOS, might fail on Windows)
+        try:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
+        except (NotImplementedError, AttributeError):
+            logger.warning("Signal handlers not supported on this platform (Windows?). Using KeyboardInterrupt fallback.")
         
         # Create Tasks
         t1 = asyncio.create_task(self.task_scanner())
