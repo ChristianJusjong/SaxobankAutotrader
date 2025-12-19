@@ -304,7 +304,10 @@ class MarketDataManager:
             #   'payload': [...] or {...}
             # }
             
-            ref_id = decoded.get('refId', '')
+            rx_ref = decoded.get('refId')
+            logger.debug(f"WS RX: RefId={rx_ref}")
+
+            ref_id = rx_ref or ''
             if ref_id and ref_id.startswith(self.ref_id):
                 payload = decoded.get('payload')
                 self._process_data_list(payload)
