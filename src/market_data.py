@@ -156,6 +156,10 @@ class MarketDataManager:
 
     def _subscribe_uics(self, uics, ref_id_suffix=""):
         """Subscribes to InfoPrices via REST API. suffix allows multiple subs."""
+        if not uics:
+            # Prevent InvalidModelState error from empty list
+            return
+
         token = self.auth.ensure_valid_token()
         url = "https://gateway.saxobank.com/sim/openapi/trade/v1/infoprices/subscriptions"
         
