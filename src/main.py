@@ -94,13 +94,13 @@ def main():
                     if update_time != last_processed_time.get(uic):
                         # logger.debug(f"Tick: {uic} @ {current_price}")
                         
-                        prev_max = strategy.positions.get(uic, {}).get('max_price', 0)
+                        prev_max = strategy.active_positions.get(uic, {}).get('peak_price', 0)
 
                         # Update Strategy
                         signal = strategy.update(uic, current_price, quantity=TRADE_QUANTITY)
                         
                         # Check for Peak Update
-                        new_max = strategy.positions.get(uic, {}).get('max_price', 0)
+                        new_max = strategy.active_positions.get(uic, {}).get('peak_price', 0)
                         if new_max > prev_max and prev_max > 0:
                             # User requested WARNING (Yellow) for Peaks
                             logger.warning(f"PEAK DETECTED: UIC {uic} New High: {new_max:.2f}")
