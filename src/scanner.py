@@ -154,6 +154,9 @@ class MarketScanner:
                     break 
             except Exception as e:
                 logger.error(f"Batch scan error: {e}")
+            
+            # rate limit buffer
+            time.sleep(0.5)
         
         return hot_candidates
 
