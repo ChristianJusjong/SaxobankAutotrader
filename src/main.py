@@ -76,6 +76,10 @@ def main():
             # Health Check (Every 60s)
             if current_time - last_health_check > 60:
                 reporter.log_health(strategy)
+                
+                # Auto-Cleanup Stale Streams
+                market_data.prune_stream(safe_uics=strategy.active_positions)
+                
                 last_health_check = current_time
 
             # B. Strategy Loop

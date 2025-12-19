@@ -75,6 +75,7 @@ class MarketDataManager:
         self.ws = None
         self.active_uics = []
         self.uic_ref_map = {} # uic -> ref_id
+        self.subscription_start_times = {} # uic -> start_ts
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -147,6 +148,8 @@ class MarketDataManager:
 
     def _on_error(self, ws, error):
         logger.error(f"WebSocket Error: {error}")
+        if "SubscriptionLimitExceeded" in str(error):
+            logger.critical("CRITICAL: WebSocket Subscription Limit Reached! Pausing Scanner additions.")
 
     def _on_close(self, ws, close_status_code, close_msg):
         logger.info(f"WebSocket Closed: {close_status_code} - {close_msg}")
@@ -183,13 +186,20 @@ class MarketDataManager:
                 with self._lock:
                     for uic in uics:
                         self.uic_ref_map[uic] = final_ref_id
+                        # Record start time for pruning if not present
+                        if uic not in self.subscription_start_times:
+                            self.subscription_start_times[uic] = time.time()
 
                 # Process initial snapshot if present
                 snapshot = resp.json().get('Snapshot', {})
                 if snapshot:
                     self._process_data_list(snapshot.get('Data', []))
             else:
-                logger.error(f"Failed to subscribe: {resp.text}")
+                resp_text = resp.text
+                logger.error(f"Failed to subscribe: {resp_text}")
+                
+                if "SubscriptionLimitExceeded" in resp_text or resp.status_code == 403: # 403 often limits
+                     logger.critical("CRITICAL: API Subscription Limit Reached! Pruning required.")
         except Exception as e:
             logger.error(f"Subscription error: {e}")
 
@@ -201,14 +211,37 @@ class MarketDataManager:
                 return
             
             self.active_uics.append(uic)
+            self.subscription_start_times[uic] = time.time() # Start Clock
         
         # Subscribe using a unique RefId suffix relative to time + uic to avoid collisions
         suffix = f"_{uic}_{int(time.time())}"
         self._subscribe_uics([uic], ref_id_suffix=suffix)
         
-    def add_subscription(self, uic):
-        """Alias for subscribe_to_ticker."""
+    def add_to_stream(self, uic):
+        """Public alias for adding to stream."""
         self.subscribe_to_ticker(uic)
+
+    def prune_stream(self, safe_uics):
+        """
+        Removes subscriptions older than 60 minutes, EXCEPT those in safe_uics (active positions).
+        """
+        logger.info("Running Stream Pruning...")
+        now = time.time()
+        to_remove = []
+        
+        with self._lock:
+            for uic, start_time in self.subscription_start_times.items():
+                # Safety Check: Never prune active positions
+                if uic in safe_uics: continue
+                
+                # Age limit: 60 minutes (3600 sec)
+                if now - start_time > 3600:
+                    to_remove.append(uic)
+        
+        if to_remove:
+            logger.info(f"Pruning {len(to_remove)} stale subscriptions...")
+            for uic in to_remove:
+                self.unsubscribe_from_ticker(uic)
 
     def unsubscribe_from_ticker(self, uic):
         """Removes a UIC from monitoring and deletes its subscription."""
@@ -225,6 +258,7 @@ class MarketDataManager:
                  # Still remove from local tracking
                  self.active_uics.remove(uic)
                  if uic in self.live_market_state: del self.live_market_state[uic]
+                 if uic in self.subscription_start_times: del self.subscription_start_times[uic]
                  return
         
         # Call API to DELETE subscription
@@ -243,6 +277,7 @@ class MarketDataManager:
                     if uic in self.active_uics: self.active_uics.remove(uic)
                     if uic in self.uic_ref_map: del self.uic_ref_map[uic]
                     if uic in self.live_market_state: del self.live_market_state[uic]
+                    if uic in self.subscription_start_times: del self.subscription_start_times[uic]
                     
             else:
                 logger.error(f"Failed to unsubscribe UIC {uic}: {resp.status_code} {resp.text}")
