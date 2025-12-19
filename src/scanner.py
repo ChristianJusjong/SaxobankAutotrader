@@ -161,15 +161,20 @@ class MarketScanner:
         return hot_candidates
 
     def _analyze_hot_candidate(self, item):
-        """Checks if item meets criteria (>1.5% change)."""
+        """Checks if item meets criteria (>1.5% change) AND Price limits ($1-$20)."""
         uic = item.get('Uic')
         asset_type = item.get('AssetType', 'Stock')
         quote = item.get('Quote', {})
         
         percent_change = quote.get('PercentChange', 0.0)
-        current_price = quote.get('LastTraded')
+        current_price = quote.get('LastTraded', 0.0)
         
-        # Criteria: > 1.5%
+        # 1. Price Filter (Micro-Capital: $1 - $20)
+        # corresponds roughly to 7kr - 140kr
+        if not (1.0 <= current_price <= 20.0):
+            return None
+        
+        # 2. Hot Criteria: > 1.5%
         if percent_change > 1.5:
             symbol = item.get('DisplayAndFormat', {}).get('Symbol', f"UIC:{uic}")
             

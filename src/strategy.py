@@ -150,24 +150,35 @@ class TrendFollower:
         if current_price <= stop_price:
             logger.warning(f"Trailing Stop HIT for UIC {uic} at {current_price} (Stop: {stop_price:.2f})")
             
-            # --- PROFIT GUARD ---
+            # --- EXIT ANALYSIS & CLASSIFICATION ---
             entry_price = position['entry_price']
             qty = position['qty']
             
-            # Strict Audit Check: Includes FX Friction and Slippage Buffer
-            # Defaulting to USD instrument for now as per audit context
-            is_profitable_safe = self.account.evaluate_trade(entry_price, current_price, qty, uic, instrument_currency="USD")
+            # Calculate PnL in DKK (assuming account is DKK)
+            # We use strict audit settings
+            net_pnl = self.account.calculate_net_profit(
+                entry_price, current_price, qty, uic,
+                instrument_currency="USD", account_currency="DKK", include_slippage=True
+            )
             
-            if is_profitable_safe:
-                logger.info(f"Profit Guard PASSED. Trade evaluated as SAFE (Net > 0 after FX/Slippage). Executing SELL.")
-                del self.active_positions[uic] # Close internal position tracker
-                # PERSIST (Remove)
-                self._delete_state(uic)
-                return 'SELL'
+            gross_pnl = (current_price - entry_price) * qty
+            
+            # Classification
+            if net_pnl > 0:
+                tag = "[WIN]"
+                color = "green"
+            elif gross_pnl > 0 and net_pnl <= 0:
+                tag = "[WASH]" # Profitable trade eaten by fees
+                color = "yellow"
             else:
-                # Log the logic
-                logger.warning(f"Profit Guard BLOCK. Trade is technically visible stop, but FAILS audit (Fees/FX/Slippage > Profit). HOLDING.")
-                return None
+                tag = "[LOSS]"
+                color = "red"
+                
+            logger.warning(f"Closing Position {uic} {tag}: Net PnL {net_pnl:.2f} DKK (Gross: ${gross_pnl:.2f})")
+            
+            del self.active_positions[uic] # Close internal position tracker
+            self._delete_state(uic)
+            return 'SELL'
         
         return None
 

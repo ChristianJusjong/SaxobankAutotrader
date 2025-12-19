@@ -180,7 +180,33 @@ class BotOrchestrator:
                         prev_peak = self.strategy.active_positions.get(uic, {}).get('peak_price', 0)
                         
                         # EXECUTE STRATEGY
-                        signal = self.strategy.update(uic, current_price, quantity=TRADE_QUANTITY)
+                        # 1. Single Position Rule (Micro-Capital)
+                        if len(self.strategy.active_positions) >= 1 and uic not in self.strategy.active_positions:
+                            # We already found our "One True Trade". Ignore others until we sell.
+                            continue
+
+                        # 2. Dynamic Quantity Calculation
+                        # Cap at $70 USD (~500 DKK)
+                        CAPITAL_LIMIT_USD = 70.0
+                        qty = int(CAPITAL_LIMIT_USD / current_price) if current_price > 0 else 0
+                        
+                        if qty < 1 and not self.strategy.active_positions.get(uic):
+                            # Too expensive for our poor wallet
+                            continue
+                            
+                        # 3. Cost Efficiency Check (Before BUY Signal)
+                        # Estimated Cost: $2.00 (commission)
+                        # We need Potential Profit > $4.00 to justify trade
+                        # Proxy: Can a 6% move cover 2x costs?
+                        # Potential Profit from 6% move = (Price * Qty) * 0.06
+                        EST_COST = 2.0
+                        if not self.strategy.active_positions.get(uic):
+                            potential_profit = (current_price * qty) * 0.06
+                            if potential_profit < (2 * EST_COST):
+                                # Skip: Volatility/Capital too low to cover fees
+                                continue
+
+                        signal = self.strategy.update(uic, current_price, quantity=qty)
                         
                         # Logging & Notification
                         new_peak = self.strategy.active_positions.get(uic, {}).get('peak_price', 0)
@@ -189,12 +215,12 @@ class BotOrchestrator:
 
                         if signal:
                             action = 'Buy' if signal == 'BUY' else 'Sell'
-                            logger.critical(f"TRADE SIGNAL: {action} {uic} @ {current_price}")
+                            logger.critical(f"TRADE SIGNAL: {action} {uic} @ {current_price} (Qty: {qty})")
                             
                             success = False
                             if not SIMULATION_MODE:
                                 success = self.executor_module.place_order(
-                                    uic=uic, amount=TRADE_QUANTITY, action=action, 
+                                    uic=uic, amount=qty, action=action, 
                                     order_type='Market', asset_type='Stock'
                                 )
                             else:
