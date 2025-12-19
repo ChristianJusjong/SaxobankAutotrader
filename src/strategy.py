@@ -27,8 +27,7 @@ class TrendFollower:
         else:
             logger.warning("REDIS_URL not found. Bot running in stateless mode (memory only).")
 
-        else:
-            logger.warning("REDIS_URL not found. Bot running in stateless mode (memory only).")
+
 
         # Active Positions: {uic: {'entry_price': float, 'qty': int, 'peak_price': float}}
         self.active_positions = {}
