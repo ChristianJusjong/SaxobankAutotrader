@@ -23,7 +23,8 @@ from scanner import MarketScanner
 
 # Configuration
 UICS_TO_TRADE = [211] # Apple default
-TRADE_QUANTITY = 10
+STARTING_CASH_DKK = 500
+TRADE_QUANTITY = None # Dynamic based on cash
 SIMULATION_MODE = True
 REDIS_URL = os.getenv('REDIS_URL')
 
@@ -186,8 +187,8 @@ class BotOrchestrator:
                             continue
 
                         # 2. Dynamic Quantity Calculation
-                        # Cap at $70 USD (~500 DKK)
-                        CAPITAL_LIMIT_USD = 70.0
+                        # Convert DKK to USD (Approx 1 DKK = 0.145 USD)
+                        CAPITAL_LIMIT_USD = STARTING_CASH_DKK * 0.145
                         qty = int(CAPITAL_LIMIT_USD / current_price) if current_price > 0 else 0
                         
                         if qty < 1 and not self.strategy.active_positions.get(uic):
