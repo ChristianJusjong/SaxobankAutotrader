@@ -17,7 +17,7 @@ class MarketScanner:
         self.running = True
         # Initial Universe Fetch
         try:
-            self.universe_uics = self.get_tradable_universe()
+            self.universe_uics = self.get_us_universe()
             logger.info(f"Market Scanner initialized with {len(self.universe_uics)} instruments.")
         except Exception as e:
             logger.error(f"Failed to fetch universe: {e}")
@@ -29,31 +29,23 @@ class MarketScanner:
         t.start()
         logger.info(f"Market Scanner loop started (Interval: {self.scan_interval}s)")
 
-    def get_tradable_universe(self):
+    def get_us_universe(self):
         """
-        Fetches tradable universe from Saxo.
-        Simulated 'US Large Cap' by searching for major keywords/exchanges.
+        Fetches 'broad market' universe from Saxo via ExchangeId=NYSE/NASDAQ.
         """
         token = self.auth.ensure_valid_token()
         if not token: return []
         
-        # Searching for 'All US Stocks' via API is complex without a scanner subscription.
-        # We will approximate "US Large Cap" by searching for common keywords or a curated list.
-        # For this requirement, we'll try to get reasonable results using AssetType=Stock.
-        
-        # In a real scenario, you might iterate exchanges. 
-        # Here we perform a search for "Apple", "Microsoft", "Tesla", "Amazon", "NVDA", "GOOG"
-        # to build a valid list for the SIMULATION.
-        
-        keywords = ["Apple", "Microsoft", "Tesla", "Amazon", "Nvidia", "Google", "Meta", "AMD", "Intel", "Netflix"]
         uics = set()
-        
         url = "https://gateway.saxobank.com/sim/openapi/ref/v1/instruments"
         headers = {"Authorization": f"Bearer {token}"}
         
-        for kw in keywords:
+        # User requested Exchanges
+        exchanges = ["NYSE", "NASDAQ"]
+        
+        for ex in exchanges:
             params = {
-                'Keywords': kw,
+                'ExchangeId': ex,
                 'AssetTypes': 'Stock',
                 'IncludeNonTradable': False
             }
@@ -61,12 +53,32 @@ class MarketScanner:
                 resp = requests.get(url, headers=headers, params=params)
                 if resp.status_code == 200:
                     data = resp.json().get('Data', [])
+                    count = 0
                     for item in data:
-                        # Simple filter: check if strictly stock and decent match
+                        # Ensure strictly Stock
                         if item.get('AssetType') == 'Stock':
-                            uics.add(item.get('Identifier')) # Identifier is typically UIC
+                            uics.add(item.get('Identifier'))
+                            count += 1
+                    logger.info(f"Loaded {count} instruments from {ex}")
+                else:
+                    logger.warning(f"Failed to fetch {ex} universe: {resp.status_code} {resp.text}")
+                    
             except Exception as e:
-                logger.error(f"Universe search error for {kw}: {e}")
+                logger.error(f"Universe search error for {ex}: {e}")
+                
+        # Fallback if empty (Sim might not index cleanly by ExchangeId without specific subscription)
+        if not uics:
+            logger.warning("Exchange fetch returned 0 results. Falling back to Keyword search for 'US Tech'...")
+            # Fallback Logic (Quick Copy)
+            keywords = ["Apple", "Microsoft", "Tesla", "Amazon", "Nvidia"]
+            for kw in keywords:
+                try:
+                    p = {'Keywords': kw, 'AssetTypes': 'Stock'}
+                    r = requests.get(url, headers=headers, params=p)
+                    if r.status_code == 200:
+                        for i in r.json().get('Data', []):
+                           uics.add(i.get('Identifier'))
+                except: pass
                 
         return list(uics)
 
@@ -75,9 +87,12 @@ class MarketScanner:
             try:
                 hot_list = self.perform_market_scan()
                 if hot_list:
-                    logger.info(f"Scanner found {len(hot_list)} Hot Candidates: {[u for u,p in hot_list]}")
+                    # hot_list is now (uic, price, asset_type)
+                    # For logging purposes, extract uics
+                    uic_display = [h[0] for h in hot_list]
+                    logger.info(f"Scanner found {len(hot_list)} Hot Candidates: {uic_display}")
                     
-                    for uic, price in hot_list:
+                    for uic, price, asset_type in hot_list:
                          # Dynamic Subscription
                          self.md.add_subscription(uic)
             except Exception as e:
@@ -88,7 +103,7 @@ class MarketScanner:
     def perform_market_scan(self):
         """
         Scans the universe in batches of 50.
-        Returns list of (uic, price) tuples for 'Hot Candidates'.
+        Returns list of (uic, price, asset_type) tuples for 'Hot Candidates'.
         """
         if not self.universe_uics:
             logger.warning("Empty universe, skipping scan.")
@@ -143,19 +158,20 @@ class MarketScanner:
         return hot_candidates
 
     def _analyze_hot_candidate(self, item):
-        """Checks if item meets criteria (>2% change)."""
+        """Checks if item meets criteria (>1.5% change)."""
         uic = item.get('Uic')
+        asset_type = item.get('AssetType', 'Stock')
         quote = item.get('Quote', {})
         
         percent_change = quote.get('PercentChange', 0.0)
         current_price = quote.get('LastTraded')
         
-        # Criteria: > 2.0%
-        if percent_change > 2.0:
+        # Criteria: > 1.5%
+        if percent_change > 1.5:
             symbol = item.get('DisplayAndFormat', {}).get('Symbol', f"UIC:{uic}")
             
             # Cyan Info Log
             logger.info(f"Quick Win Detected! {symbol} is up {percent_change:.2f}% (Price: {current_price})")
-            return (uic, current_price)
+            return (uic, current_price, asset_type)
             
         return None
