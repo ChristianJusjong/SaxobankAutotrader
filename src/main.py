@@ -137,14 +137,26 @@ class BotOrchestrator:
                 logger.info("Janitor: Checking for stale subscriptions...")
                 
                 # Run sync prune in thread pool
-                # Strategy positions are SAFE from pruning
-                safe_list = self.strategy.active_positions
-                prune_func = functools.partial(self.market_data.prune_stream, safe_uics=safe_list)
+                # Maintain Anchor Subscriptions (UICS_TO_TRADE) to prevent WS Idle Timeout
+                anchor_uics = UICS_TO_TRADE
+                active_positions = list(self.strategy.active_positions.keys())
+                safe_list = set(anchor_uics + active_positions)
+                
+                logger.info(f"Janitor: Protecting {len(safe_list)} instruments from pruning.")
+                
+                prune_func = functools.partial(self.market_data.prune_stream, safe_uics=list(safe_list))
                 
                 await loop.run_in_executor(self.executor, prune_func)
                 
                 # Sync state after potential removals
                 self.sync_active_universe()
+                
+                # Ensure Anchor is actually subscribed if missing (Re-Subscribe check)
+                for uic in UICS_TO_TRADE:
+                    if uic not in self.market_data.active_uics:
+                         logger.info(f"Janitor: Re-subscribing to Anchor UIC {uic}")
+                         self.market_data.add_subscription(uic)
+                
                 
             except Exception as e:
                 logger.error(f"Janitor Task Error: {e}")
