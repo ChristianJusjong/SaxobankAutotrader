@@ -304,7 +304,8 @@ class MarketDataManager:
             #   'payload': [...] or {...}
             # }
             
-            if decoded.get('refId') == self.ref_id:
+            ref_id = decoded.get('refId', '')
+            if ref_id and ref_id.startswith(self.ref_id):
                 payload = decoded.get('payload')
                 self._process_data_list(payload)
                 
