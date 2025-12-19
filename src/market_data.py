@@ -305,7 +305,7 @@ class MarketDataManager:
             # }
             
             rx_ref = decoded.get('refId')
-            logger.debug(f"WS RX: RefId={rx_ref}")
+            # logger.debug(f"WS RX: RefId={rx_ref}")
 
             ref_id = rx_ref or ''
             if ref_id and ref_id.startswith(self.ref_id):
