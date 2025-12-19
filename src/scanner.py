@@ -174,12 +174,21 @@ class MarketScanner:
         if not (1.0 <= current_price <= 20.0):
             return None
         
-        # 2. Hot Criteria: > 1.5%
-        if percent_change > 1.5:
+        # 2. Volatility & Liquidity Filter
+        # User Requirement: "Surged 3% or more" (High Volatility)
+        # User Requirement: "High relative volume" (Proxying with Min Volume > 20k to ensure liquidity)
+        volume = quote.get('Volume', 0)
+        
+        # Check Liquidity first (avoid ghost stocks)
+        if volume < 20000: 
+            return None
+
+        # Check Surge Criteria (> 3.0%)
+        if percent_change >= 3.0:
             symbol = item.get('DisplayAndFormat', {}).get('Symbol', f"UIC:{uic}")
             
             # Cyan Info Log
-            logger.info(f"Quick Win Detected! {symbol} is up {percent_change:.2f}% (Price: {current_price})")
+            logger.warning(f"VOLATILITY SURGE: {symbol} is up {percent_change:.2f}% (Price: {current_price}, Vol: {volume})")
             return (uic, current_price, asset_type)
             
         return None
