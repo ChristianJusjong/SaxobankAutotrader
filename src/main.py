@@ -93,6 +93,22 @@ class BotOrchestrator:
         logger.info("Task [Scanner]: Started.")
         loop = asyncio.get_running_loop()
         
+        # Initial Universe Fetch (in background thread)
+        logger.info("Scanner: Fetching US Universe...")
+        try:
+            # We assign the result directly to the scanner instance's attribute
+            def fetch_universe():
+                return self.scanner.get_us_universe()
+            
+            # Using executor to avoid blocking main loop during network call
+            uics = await loop.run_in_executor(self.executor, fetch_universe)
+            self.scanner.universe_uics = uics
+            logger.info(f"Scanner Universe Loaded: {len(uics)} instruments.")
+        except Exception as e:
+            logger.error(f"Failed to load universe: {e}")
+            # Fallback
+            self.scanner.universe_uics = [211, 212, 111, 137]
+
         while self.running:
             try:
                 # Run sync scanner in thread pool
